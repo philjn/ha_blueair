@@ -141,16 +141,23 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry):
                         _LOGGER.debug(f"sensor data update provided for unknown device: {device_id}")
                         return
                     device = coordinator.blueair_api_device
-                    if "pm1" in sensors:
-                        device.pm1 = int(sensors["pm1"])
-                    if "pm2_5" in sensors:
-                        device.pm2_5 = int(sensors["pm2_5"])
-                    if "pm10" in sensors:
-                        device.pm10 = int(sensors["pm10"])
-                    if "fsp0" in sensors:
-                        device.fan_speed_0 = int(sensors["fsp0"])
+                    device.apply_sensor_data(sensors)
                     device.publish_updates()
                     # Schedule HA state update on the event loop (thread-safe)
+                    hass.loop.call_soon_threadsafe(
+                        coordinator.async_set_updated_data, str(device)
+                    )
+
+                def on_state_change(device_id, state):
+                    """Handle MQTT shadow state change (called from MQTT thread)."""
+                    _LOGGER.debug(f"processing state change {state} for {device_id}")
+                    coordinator = aws_coordinator_map.get(device_id)
+                    if coordinator is None:
+                        _LOGGER.debug(f"state change provided for unknown device: {device_id}")
+                        return
+                    device = coordinator.blueair_api_device
+                    device.apply_state_change(state)
+                    device.publish_updates()
                     hass.loop.call_soon_threadsafe(
                         coordinator.async_set_updated_data, str(device)
                     )
@@ -174,6 +181,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry):
                     )
 
                 mqtt_client.on_sensor_data = on_sensor_data
+                mqtt_client.on_state_change = on_state_change
                 mqtt_client.on_event = on_event
 
                 # Credential refresher for automatic reconnect on token expiry.
