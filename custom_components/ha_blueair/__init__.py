@@ -1,3 +1,4 @@
+import contextlib
 import logging
 from datetime import timedelta
 
@@ -143,10 +144,14 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry):
                         return
                     device = coordinator.blueair_api_device
                     map_and_publish_sensor_data(sensors, device)
-                    # Schedule HA state update on the event loop (thread-safe)
-                    hass.loop.call_soon_threadsafe(
-                        coordinator.async_set_updated_data, str(device)
-                    )
+                    # Schedule HA state update on the event loop (thread-safe).
+                    # Guard against the event loop being closed during integration
+                    # reload/shutdown — a paho-mqtt thread may deliver one last
+                    # message after async_unload_entry has run (#347).
+                    with contextlib.suppress(RuntimeError):
+                        hass.loop.call_soon_threadsafe(
+                            coordinator.async_set_updated_data, str(device)
+                        )
 
                 def on_event(device_id, event):
                     """Handle MQTT connectivity event (called from MQTT thread)."""
@@ -157,9 +162,11 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry):
                         return
                     device = coordinator.blueair_api_device
                     map_and_publish_event(event, device)
-                    hass.loop.call_soon_threadsafe(
-                        coordinator.async_set_updated_data, str(device)
-                    )
+                    # See note in on_sensor_data re: closed-loop race (#347).
+                    with contextlib.suppress(RuntimeError):
+                        hass.loop.call_soon_threadsafe(
+                            coordinator.async_set_updated_data, str(device)
+                        )
 
 
                 mqtt_client.on_sensor_data = on_sensor_data
@@ -213,10 +220,18 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry):
 
 async def async_unload_entry(hass: HomeAssistant, config_entry: ConfigEntry):
     _LOGGER.debug("unload entry")
-    # Disconnect MQTT before unloading platforms
     data = hass.data.get(DOMAIN)
-    if data and data.get(DATA_MQTT_CLIENT):
-        data[DATA_MQTT_CLIENT].disconnect()
+    mqtt_client = data.get(DATA_MQTT_CLIENT) if data else None
+    if mqtt_client is not None:
+        # Detach callbacks first so any in-flight messages from the paho thread
+        # — which may keep running for a few seconds after disconnect() — become
+        # no-ops and can't try to schedule on a closing/closed event loop (#347).
+        mqtt_client.on_sensor_data = None
+        mqtt_client.on_event = None
+        # disconnect() is a blocking paho call; run it in the executor so we
+        # don't block the event loop while it signals the loop_forever thread
+        # to stop.
+        await hass.async_add_executor_job(mqtt_client.disconnect)
         _LOGGER.info("MQTT disconnected")
 
     unload_ok = await hass.config_entries.async_unload_platforms(
