@@ -54,6 +54,17 @@
           }
         }
       }
+    },
+    "button": {
+      "reset_filter": {
+        "name": "Reset Filter Life"
+      },
+      "reset_wick": {
+        "name": "Reset Wick Life"
+      },
+      "reset_refresher": {
+        "name": "Reset Refresher Life"
+      }
     }
   }
 }

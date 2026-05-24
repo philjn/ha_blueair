@@ -31,6 +31,10 @@ A custom integration for Blueair Filters.  If your model isn't reported correctl
   - child lock
   - germ shield
   - wick dry
+- buttons
+  - Reset Filter Life (devices that report `filter_usage_percentage`)
+  - Reset Wick Life (humidifiers that report `wick_usage_percentage`)
+  - Reset Refresher Life (devices that report `water_refresher_usage_percentage`)
 - climate (T10i/T20i only)
 - humidifier (H35i/H76i only)
 

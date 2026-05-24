@@ -11,6 +11,8 @@ from homeassistant.util.color import (
 
 from blueair_api import DeviceAws
 
+from homeassistant.exceptions import HomeAssistantError
+
 from .blueair_update_coordinator import BlueairUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -335,3 +337,87 @@ class BlueairUpdateCoordinatorDeviceAws(BlueairUpdateCoordinator):
     async def set_hour_format(self, value: bool) -> None:
         await self.blueair_api_device.set_hour_format(value)
         await self.async_request_refresh()
+
+    # ------------------------------------------------------------------
+    # Consumable resets (filter / wick / refresher)
+    # ------------------------------------------------------------------
+    # These are cloud REST calls (not shadow writes). The cloud responds
+    # with a `status` code; on success it then pushes a shadow update
+    # that drops the corresponding `*_usage_percentage` to 0, which the
+    # MQTT layer applies. We deliberately do NOT request a refresh after
+    # success — the shadow update path is faster and avoids a redundant
+    # full /initial round-trip. We do request one on failure so a stale
+    # offline flag (see GH#287) doesn't strand the user.
+
+    async def _reset_consumable(self, ctype: str, reset_fn) -> None:
+        """Shared body for the per-consumable reset coordinator methods.
+
+        ``reset_fn`` is the bound DeviceAws method to invoke
+        (``reset_filter`` / ``reset_wick`` / ``reset_refresher``). We
+        translate the underlying bool return into a
+        ``HomeAssistantError`` so a failed button press surfaces in the
+        HA UI rather than silently no-op'ing.
+        """
+        device_name = getattr(self, "device_name", "Blueair device")
+        try:
+            ok = await reset_fn()
+        except ValueError as exc:
+            # Bad ctype is a library bug, not a transient failure.
+            _LOGGER.error(
+                "Consumable reset rejected for %s (ctype=%s): %s",
+                device_name, ctype, exc,
+            )
+            raise HomeAssistantError(
+                f"Cannot reset {ctype}: {exc}"
+            ) from exc
+        except Exception as exc:
+            # Auth / transport failures land here. Trigger a refresh so
+            # the coordinator can re-authenticate before the next
+            # interaction.
+            _LOGGER.exception(
+                "Consumable reset failed for %s (ctype=%s)",
+                device_name, ctype,
+            )
+            await self.async_request_refresh()
+            raise HomeAssistantError(
+                f"Failed to reset {ctype} on {device_name}: {exc}"
+            ) from exc
+
+        if not ok:
+            # Most common cause is that the device is offline (the cloud
+            # status code distinguishes "offline" from "other failure" —
+            # see HttpAwsBlueair.reset_consumable). Either way force a
+            # refresh so the offline state (if real) is reflected
+            # promptly in the UI.
+            _LOGGER.warning(
+                "Consumable reset for %s (ctype=%s) was rejected by "
+                "the cloud (device may be offline or the reset was "
+                "otherwise refused)",
+                device_name, ctype,
+            )
+            await self.async_request_refresh()
+            raise HomeAssistantError(
+                f"Blueair cloud rejected the {ctype} reset for "
+                f"{device_name}. The device may be offline; try again "
+                f"once it reconnects."
+            )
+
+        _LOGGER.debug(
+            "Consumable reset accepted for %s (ctype=%s); awaiting "
+            "shadow update to zero usage counter", device_name, ctype,
+        )
+
+    async def reset_filter(self) -> None:
+        await self._reset_consumable(
+            "filter", self.blueair_api_device.reset_filter
+        )
+
+    async def reset_wick(self) -> None:
+        await self._reset_consumable(
+            "wick", self.blueair_api_device.reset_wick
+        )
+
+    async def reset_refresher(self) -> None:
+        await self._reset_consumable(
+            "refresher", self.blueair_api_device.reset_refresher
+        )
