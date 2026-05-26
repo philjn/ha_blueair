@@ -61,11 +61,22 @@ class BlueairResetButtonEntity(BlueairEntity, ButtonEntity):
     def is_implemented(kls, coordinator) -> bool:
         """Expose the button only when the device supports the consumable.
 
-        Two gates:
+        Three gates:
         * The life property must not be ``NotImplemented`` — only devices
           that actually report this consumable on their shadow.
         * The coordinator must have the matching reset method — only the
           AWS coordinator does; the legacy coordinator has no reset path.
+        * The underlying device must support the cloud-driven reset
+          path. Older device families (B4, BluePremium, Classic) require
+          a physical hold-the-fan-button reset on the device itself —
+          the cloud REST endpoint returns ``status: 0`` but the device
+          firmware ignores it. Exposing a button that silently no-ops
+          would be confusing UX, so we skip those models entirely. See
+          ``blueair_api.DeviceAws.supports_filter_reset_online`` for the
+          hardware-prefix mapping and the empirical evidence it's based
+          on. ``hasattr`` guards against older blueair_api releases that
+          predate the property — falls back to "supported" so we never
+          regress devices that worked before this gate was added.
         """
         key = kls.entity_description.key
         life_value = getattr(coordinator, key, NotImplemented)
@@ -73,6 +84,12 @@ class BlueairResetButtonEntity(BlueairEntity, ButtonEntity):
             return False
         if not hasattr(coordinator, kls._reset_method_name):
             return False
+        api_device = getattr(coordinator, "blueair_api_device", None)
+        if api_device is not None and hasattr(
+            api_device, "supports_filter_reset_online"
+        ):
+            if not api_device.supports_filter_reset_online:
+                return False
         return True
 
     def __init__(self, coordinator):

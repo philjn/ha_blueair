@@ -82,6 +82,84 @@ def test_buttons_are_independent_across_consumables():
 
 
 # ---------------------------------------------------------------------------
+# supports_filter_reset_online hardware gate
+# ---------------------------------------------------------------------------
+
+def test_filter_button_hidden_when_device_requires_manual_reset():
+    """Older device families (B4 / BluePremium / Classic) require a
+    physical hold-the-fan-button reset on the device itself. The cloud
+    REST endpoint returns success but the firmware ignores it, so
+    exposing a button that silently no-ops would be confusing UX.
+
+    The gate reads ``coordinator.blueair_api_device
+    .supports_filter_reset_online``; when that is False the button must
+    not be implemented even if life and the reset method are present.
+    """
+    api_device = SimpleNamespace(supports_filter_reset_online=False)
+    coord = _coord(
+        filter_life=85,
+        reset_filter=AsyncMock(),
+        blueair_api_device=api_device,
+    )
+    assert BlueairResetFilterButtonEntity.is_implemented(coord) is False
+
+
+def test_filter_button_shown_when_device_supports_online_reset():
+    api_device = SimpleNamespace(supports_filter_reset_online=True)
+    coord = _coord(
+        filter_life=85,
+        reset_filter=AsyncMock(),
+        blueair_api_device=api_device,
+    )
+    assert BlueairResetFilterButtonEntity.is_implemented(coord) is True
+
+
+def test_filter_button_falls_back_to_supported_on_older_blueair_api():
+    """``supports_filter_reset_online`` was added in a later blueair_api
+    release; the gate must not regress devices that worked before this
+    property existed. When the property is absent on the API device,
+    treat the device as supported."""
+    api_device_without_attr = SimpleNamespace()  # no supports_filter_reset_online
+    coord = _coord(
+        filter_life=85,
+        reset_filter=AsyncMock(),
+        blueair_api_device=api_device_without_attr,
+    )
+    assert BlueairResetFilterButtonEntity.is_implemented(coord) is True
+
+
+def test_filter_button_falls_back_to_supported_when_blueair_api_device_missing():
+    """Defensive: if blueair_api_device is None for any reason, don't
+    block button exposure on that basis."""
+    coord = _coord(
+        filter_life=85,
+        reset_filter=AsyncMock(),
+        blueair_api_device=None,
+    )
+    assert BlueairResetFilterButtonEntity.is_implemented(coord) is True
+
+
+def test_wick_button_respects_supports_filter_reset_online_gate():
+    api_device = SimpleNamespace(supports_filter_reset_online=False)
+    coord = _coord(
+        wick_life=85,
+        reset_wick=AsyncMock(),
+        blueair_api_device=api_device,
+    )
+    assert BlueairResetWickButtonEntity.is_implemented(coord) is False
+
+
+def test_refresher_button_respects_supports_filter_reset_online_gate():
+    api_device = SimpleNamespace(supports_filter_reset_online=False)
+    coord = _coord(
+        water_refresher_life=85,
+        reset_refresher=AsyncMock(),
+        blueair_api_device=api_device,
+    )
+    assert BlueairResetRefresherButtonEntity.is_implemented(coord) is False
+
+
+# ---------------------------------------------------------------------------
 # async_press behavior
 # ---------------------------------------------------------------------------
 
